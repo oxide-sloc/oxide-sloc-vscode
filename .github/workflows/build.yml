@@ -8,8 +8,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  vsix:
-    runs-on: ubuntu-latest
+  # Lint, compile, and run the headless VS Code test suite on both OSes.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,6 +33,32 @@ jobs:
 
       - name: Compile
         run: npm run compile
+
+      # Linux needs a virtual display to launch the VS Code Electron host.
+      - name: Test (headless VS Code, Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm test
+
+      - name: Test (headless VS Code, Windows)
+        if: runner.os == 'Windows'
+        run: npm test
+
+  # Package the VSIX once (the extension is platform-neutral) and publish the artifact.
+  vsix:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Package VSIX
         run: npx @vscode/vsce package --out oxide-sloc.vsix
