@@ -28,6 +28,11 @@
     "lines of code",
     "coverage"
   ],
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#59662E",
+    "theme": "dark"
+  },
   "main": "./out/extension.js",
   "activationEvents": [
     "onStartupFinished"
