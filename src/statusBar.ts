@@ -1,87 +1,80 @@
 // Status-bar item showing the workspace code-line count.
+//
+// It is a pure view of the shared ReportStore: it never runs the binary itself,
+// it just re-renders whenever the store changes (analysis, binary status, busy).
 
 import * as vscode from 'vscode';
-import { spawnSloc } from './binary';
-import { analyzeArgs } from './runner';
-import { parsePlain, codeLines, filesAnalyzed, warningCount, fmt } from './plain';
+import { ReportStore } from './store';
+import { fmt } from './plain';
 
 export class SlocStatusBar {
   private item: vscode.StatusBarItem;
-  private refreshing = false;
 
-  constructor() {
+  constructor(private readonly store: ReportStore) {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     this.item.command = 'oxideSloc.analyzeWorkspace';
     this.item.name = 'Oxide SLOC';
+    store.onDidChange(() => this.render());
   }
 
   dispose(): void {
     this.item.dispose();
   }
 
-  /** Show/hide based on the `oxideSloc.statusBar.enabled` setting. */
+  /** Show/hide based on the `oxideSloc.statusBar.enabled` setting, then render. */
   applyVisibility(): void {
     const enabled = vscode.workspace
       .getConfiguration('oxideSloc')
       .get<boolean>('statusBar.enabled', true);
     if (enabled) {
-      this.item.show();
+      this.render();
     } else {
       this.item.hide();
     }
   }
 
-  /** Re-run analyze across workspace folders and update the item text. */
-  async refresh(): Promise<void> {
-    if (this.refreshing) {
-      return;
-    }
-    const enabled = vscode.workspace
-      .getConfiguration('oxideSloc')
-      .get<boolean>('statusBar.enabled', true);
-    if (!enabled) {
+  private enabled(): boolean {
+    return vscode.workspace.getConfiguration('oxideSloc').get<boolean>('statusBar.enabled', true);
+  }
+
+  private render(): void {
+    if (!this.enabled() || !vscode.workspace.workspaceFolders?.length) {
       this.item.hide();
       return;
     }
 
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders || folders.length === 0) {
-      this.item.hide();
+    if (this.store.analyzing) {
+      this.item.text = '$(sync~spin) SLOC';
+      this.item.tooltip = 'Oxide SLOC: analyzing…';
+      this.item.show();
       return;
     }
 
-    this.refreshing = true;
-    this.item.text = '$(sync~spin) SLOC';
-    this.item.tooltip = 'Oxide SLOC: analyzing...';
+    if (this.store.binary && !this.store.binary.ok) {
+      this.item.text = '$(error) SLOC';
+      this.item.tooltip = 'Oxide SLOC: binary not found. Click to set it up.';
+      this.item.command = 'oxideSloc.locateBinary';
+      this.item.show();
+      return;
+    }
+
+    const r = this.store.report;
+    this.item.command = 'oxideSloc.analyzeWorkspace';
+    if (!r) {
+      this.item.text = '$(code) SLOC';
+      this.item.tooltip = 'Oxide SLOC: click to analyze the workspace.';
+      this.item.show();
+      return;
+    }
+
+    this.item.text = `$(code) ${fmt(r.codeLines)} SLOC`;
+    const lines = [
+      `Code lines: ${r.codeLines.toLocaleString('en-US')}`,
+      `Files analyzed: ${r.filesAnalyzed.toLocaleString('en-US')}`,
+      r.warnings.length > 0 ? `Warnings: ${r.warnings.length}` : undefined,
+      'Click to re-analyze the workspace.',
+    ].filter(Boolean) as string[];
+    this.item.tooltip = lines.join('\n');
     this.item.show();
-
-    try {
-      const paths = folders.map((f) => f.uri.fsPath);
-      const result = await spawnSloc(analyzeArgs(paths), paths[0]);
-      if (result.spawnError) {
-        this.item.text = '$(error) SLOC';
-        this.item.tooltip = `Oxide SLOC: ${result.spawnError.message}`;
-        return;
-      }
-      const metrics = parsePlain(result.stdout);
-      const code = codeLines(metrics);
-      if (code === undefined) {
-        this.item.text = '$(question) SLOC';
-        this.item.tooltip = 'Oxide SLOC: no code_lines in output';
-        return;
-      }
-      this.item.text = `$(code) ${fmt(code)} SLOC`;
-      const files = filesAnalyzed(metrics);
-      const warns = warningCount(metrics);
-      const lines = [
-        `Code lines: ${code.toLocaleString('en-US')}`,
-        files !== undefined ? `Files analyzed: ${files.toLocaleString('en-US')}` : undefined,
-        warns > 0 ? `Warnings: ${warns}` : undefined,
-        'Click to analyze the workspace.',
-      ].filter(Boolean);
-      this.item.tooltip = lines.join('\n');
-    } finally {
-      this.refreshing = false;
-    }
   }
 }

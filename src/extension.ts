@@ -3,23 +3,35 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { spawnSloc } from './binary';
+import { spawnSloc, binaryStatus, autodetectCandidates } from './binary';
 import { analyzeArgs, mapExit } from './runner';
-import { parsePlain, codeLines } from './plain';
+import { readReport } from './metrics';
 import { SlocStatusBar } from './statusBar';
+import { SlocTreeProvider } from './tree';
+import { ReportStore } from './store';
 import { surfaceOutcome } from './diagnostics';
+import { parsePlain } from './plain';
 import { openReport } from './report';
 import { startServe, stopServe } from './serve';
+import { configureOptions } from './options';
 
+let store: ReportStore;
 let statusBar: SlocStatusBar;
 let output: vscode.OutputChannel;
 let reportDir: string;
-let lastReportHtml: string | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel('Oxide SLOC');
-  statusBar = new SlocStatusBar();
-  context.subscriptions.push(output, statusBar);
+  store = new ReportStore(context.workspaceState);
+  statusBar = new SlocStatusBar(store);
+
+  const tree = new SlocTreeProvider(store);
+  context.subscriptions.push(
+    output,
+    statusBar,
+    store,
+    vscode.window.registerTreeDataProvider('oxideSloc.panel', tree),
+  );
 
   // Reports go to extension storage, never the workspace tree.
   reportDir = path.join(context.globalStorageUri.fsPath, 'reports');
@@ -31,17 +43,19 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('oxideSloc.openReport', openLastReport),
     vscode.commands.registerCommand('oxideSloc.startServe', () => startServe(output)),
     vscode.commands.registerCommand('oxideSloc.stopServe', () => stopServe()),
-    vscode.commands.registerCommand('oxideSloc.refreshStatus', () => statusBar.refresh()),
+    vscode.commands.registerCommand('oxideSloc.refreshStatus', () => refreshAnalysis({ silent: true })),
+    vscode.commands.registerCommand('oxideSloc.locateBinary', locateBinary),
+    vscode.commands.registerCommand('oxideSloc.configureOptions', configureOptions),
   );
 
-  // Refresh the status bar on save when the user opted in.
+  // Refresh on save when the user opted in.
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument(() => {
       const auto = vscode.workspace
         .getConfiguration('oxideSloc')
         .get<boolean>('statusBar.autoRefresh', false);
       if (auto) {
-        void statusBar.refresh();
+        void refreshAnalysis({ silent: true });
       }
     }),
   );
@@ -51,13 +65,19 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('oxideSloc.statusBar.enabled')) {
         statusBar.applyVisibility();
-        void statusBar.refresh();
+      }
+      if (e.affectsConfiguration('oxideSloc.binaryPath')) {
+        store.setBinary(binaryStatus());
       }
     }),
   );
 
+  // Seed binary status and, if it's runnable, do an initial silent scan.
+  store.setBinary(binaryStatus());
   statusBar.applyVisibility();
-  void statusBar.refresh();
+  if (store.binary?.ok) {
+    void refreshAnalysis({ silent: true });
+  }
 }
 
 export function deactivate(): void {
@@ -74,60 +94,79 @@ function reportPaths(label: string): { json: string; html: string } {
   };
 }
 
-async function runAnalyze(paths: string[], label: string): Promise<void> {
+interface RunOpts {
+  /** Suppress the outcome toast (used for background/status-bar refreshes). */
+  silent?: boolean;
+}
+
+/**
+ * Run analyze over the given paths, store the parsed JSON report, and (unless
+ * silent) surface the outcome. Central path used by commands, the status bar,
+ * and save-triggered refreshes.
+ */
+async function runAnalyze(paths: string[], label: string, opts: RunOpts = {}): Promise<void> {
   if (paths.length === 0) {
-    void vscode.window.showWarningMessage('Oxide SLOC: nothing to analyze.');
+    if (!opts.silent) {
+      void vscode.window.showWarningMessage('Oxide SLOC: nothing to analyze.');
+    }
     return;
   }
   const { json, html } = reportPaths(label);
 
-  await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Window, title: 'Oxide SLOC: analyzing...' },
-    async () => {
-      const result = await spawnSloc(
-        analyzeArgs(paths, { jsonOut: json, htmlOut: html }),
-        paths[0],
-      );
+  store.setAnalyzing(true);
+  try {
+    const result = await spawnSloc(analyzeArgs(paths, { jsonOut: json, htmlOut: html }), paths[0]);
 
-      output.appendLine(`\n$ oxide-sloc analyze ${paths.join(' ')}`);
-      if (result.stdout) {
-        output.append(result.stdout);
-      }
+    output.appendLine(`\n$ oxide-sloc analyze ${paths.join(' ')}`);
+    if (result.stdout) {
+      output.append(result.stdout);
+    }
 
-      if (result.spawnError) {
-        output.appendLine(`[error] ${result.spawnError.message}`);
+    if (result.spawnError) {
+      output.appendLine(`[error] ${result.spawnError.message}`);
+      store.setBinary(binaryStatus());
+      if (!opts.silent) {
         void vscode.window.showErrorMessage(
           `Oxide SLOC: could not run the binary (${result.spawnError.message}). ` +
-            'Set "oxideSloc.binaryPath" or add oxide-sloc to PATH.',
-        );
-        return;
+            'Set it up from the Oxide SLOC panel or via "Oxide SLOC: Locate / Auto-detect Binary".',
+          'Set Up Binary',
+        ).then((c) => c === 'Set Up Binary' && vscode.commands.executeCommand('oxideSloc.locateBinary'));
       }
-      if (result.stderr) {
-        output.appendLine(result.stderr.trimEnd());
-      }
+      return;
+    }
+    if (result.stderr) {
+      output.appendLine(result.stderr.trimEnd());
+    }
 
+    const htmlPath = fs.existsSync(html) ? html : undefined;
+    const report = readReport(json, Date.now(), htmlPath);
+    if (report) {
+      store.setReport(report);
+    }
+
+    if (!opts.silent) {
       const metrics = parsePlain(result.stdout);
-      const meaning = mapExit(result.code);
-      lastReportHtml = fs.existsSync(html) ? html : undefined;
+      await surfaceOutcome(mapExit(result.code), metrics, htmlPath, output);
+    }
+  } finally {
+    store.setAnalyzing(false);
+  }
+}
 
-      // Update the status bar from this run's numbers if we scanned the workspace.
-      const code = codeLines(metrics);
-      if (code !== undefined) {
-        void statusBar.refresh();
-      }
-
-      await surfaceOutcome(meaning, metrics, lastReportHtml, output);
-    },
-  );
+/** Analyze all workspace folders. `silent` skips the outcome toast. */
+async function refreshAnalysis(opts: RunOpts = {}): Promise<void> {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    if (!opts.silent) {
+      void vscode.window.showWarningMessage('Oxide SLOC: no workspace folder is open.');
+    }
+    return;
+  }
+  await runAnalyze(folders.map((f) => f.uri.fsPath), 'workspace', opts);
 }
 
 async function analyzeWorkspace(): Promise<void> {
-  const folders = vscode.workspace.workspaceFolders;
-  if (!folders || folders.length === 0) {
-    void vscode.window.showWarningMessage('Oxide SLOC: no workspace folder is open.');
-    return;
-  }
-  await runAnalyze(folders.map((f) => f.uri.fsPath), 'workspace');
+  await refreshAnalysis();
 }
 
 async function analyzeCurrent(target?: vscode.Uri): Promise<void> {
@@ -140,11 +179,65 @@ async function analyzeCurrent(target?: vscode.Uri): Promise<void> {
 }
 
 async function openLastReport(): Promise<void> {
-  if (!lastReportHtml || !fs.existsSync(lastReportHtml)) {
+  const htmlPath = store.report?.htmlPath;
+  if (!htmlPath || !fs.existsSync(htmlPath)) {
     void vscode.window.showInformationMessage(
       'Oxide SLOC: no report yet. Run "Oxide SLOC: Analyze Workspace" first.',
     );
     return;
   }
-  await openReport(lastReportHtml);
+  await openReport(htmlPath);
+}
+
+/**
+ * Guided binary setup: offer any auto-detected local builds, plus a file
+ * picker, and persist the choice to `oxideSloc.binaryPath`.
+ */
+async function locateBinary(): Promise<void> {
+  const detected = autodetectCandidates();
+
+  interface Pick extends vscode.QuickPickItem {
+    action: 'use' | 'browse';
+    value?: string;
+  }
+  const items: Pick[] = detected.map((p) => ({
+    label: `$(check) ${p}`,
+    description: 'detected build',
+    action: 'use',
+    value: p,
+  }));
+  items.push({ label: '$(folder-opened) Browse…', description: 'pick the oxide-sloc executable', action: 'browse' });
+
+  const choice = await vscode.window.showQuickPick(items, {
+    title: 'Oxide SLOC — Locate Binary',
+    placeHolder: detected.length ? 'Select a detected build or browse' : 'No local build found — browse to the executable',
+  });
+  if (!choice) {
+    return;
+  }
+
+  let picked = choice.value;
+  if (choice.action === 'browse') {
+    const uris = await vscode.window.showOpenDialog({
+      title: 'Select the oxide-sloc executable',
+      canSelectMany: false,
+      openLabel: 'Use this binary',
+    });
+    picked = uris?.[0]?.fsPath;
+  }
+  if (!picked) {
+    return;
+  }
+
+  await vscode.workspace
+    .getConfiguration('oxideSloc')
+    .update('binaryPath', picked, vscode.ConfigurationTarget.Workspace);
+  const status = binaryStatus();
+  store.setBinary(status);
+  if (status.ok) {
+    void vscode.window.showInformationMessage(`Oxide SLOC: using ${status.command} (v${status.version}).`);
+    void refreshAnalysis({ silent: true });
+  } else {
+    void vscode.window.showWarningMessage(`Oxide SLOC: "${picked}" did not run. Check the path.`);
+  }
 }

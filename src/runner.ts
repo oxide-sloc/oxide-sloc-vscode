@@ -1,6 +1,7 @@
 // Build oxide-sloc argument vectors and interpret exit codes.
 
 import * as vscode from 'vscode';
+import { optionFlags } from './options';
 
 export interface AnalyzeOutputs {
   jsonOut?: string;
@@ -17,6 +18,8 @@ function commonAnalyzeFlags(): string[] {
   if (configPath) {
     args.push('--config', configPath);
   }
+  // Friendly options first, then the raw escape-hatch flags (which win on conflict).
+  args.push(...optionFlags());
   const extra = cfg.get<string[]>('analyzeFlags', []);
   for (const flag of extra) {
     if (flag && flag.length > 0) {

@@ -38,11 +38,36 @@
     "onStartupFinished"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "oxideSloc",
+          "title": "Oxide SLOC",
+          "icon": "images/activitybar.svg"
+        }
+      ]
+    },
+    "views": {
+      "oxideSloc": [
+        {
+          "id": "oxideSloc.panel",
+          "name": "Metrics",
+          "icon": "images/activitybar.svg"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "oxideSloc.panel",
+        "contents": "Analyze your workspace to see live code metrics.\n[Analyze Workspace](command:oxideSloc.analyzeWorkspace)\n\nNo oxide-sloc binary yet? Locate or auto-detect one.\n[Set Up Binary](command:oxideSloc.locateBinary)"
+      }
+    ],
     "commands": [
       {
         "command": "oxideSloc.analyzeWorkspace",
         "title": "Analyze Workspace",
-        "category": "Oxide SLOC"
+        "category": "Oxide SLOC",
+        "icon": "$(play)"
       },
       {
         "command": "oxideSloc.analyzeCurrent",
@@ -52,25 +77,78 @@
       {
         "command": "oxideSloc.openReport",
         "title": "Open HTML Report",
-        "category": "Oxide SLOC"
+        "category": "Oxide SLOC",
+        "icon": "$(file)"
       },
       {
         "command": "oxideSloc.startServe",
         "title": "Start Web UI",
-        "category": "Oxide SLOC"
+        "category": "Oxide SLOC",
+        "icon": "$(globe)"
       },
       {
         "command": "oxideSloc.stopServe",
         "title": "Stop Web UI",
-        "category": "Oxide SLOC"
+        "category": "Oxide SLOC",
+        "icon": "$(circle-slash)"
       },
       {
         "command": "oxideSloc.refreshStatus",
-        "title": "Refresh Status Bar",
-        "category": "Oxide SLOC"
+        "title": "Refresh",
+        "category": "Oxide SLOC",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "oxideSloc.locateBinary",
+        "title": "Locate / Auto-detect Binary",
+        "category": "Oxide SLOC",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "oxideSloc.configureOptions",
+        "title": "Configure Analyze Options",
+        "category": "Oxide SLOC",
+        "icon": "$(gear)"
       }
     ],
     "menus": {
+      "view/title": [
+        {
+          "command": "oxideSloc.analyzeWorkspace",
+          "when": "view == oxideSloc.panel",
+          "group": "navigation@1"
+        },
+        {
+          "command": "oxideSloc.refreshStatus",
+          "when": "view == oxideSloc.panel",
+          "group": "navigation@2"
+        },
+        {
+          "command": "oxideSloc.openReport",
+          "when": "view == oxideSloc.panel",
+          "group": "navigation@3"
+        },
+        {
+          "command": "oxideSloc.configureOptions",
+          "when": "view == oxideSloc.panel",
+          "group": "1_config@1"
+        },
+        {
+          "command": "oxideSloc.locateBinary",
+          "when": "view == oxideSloc.panel",
+          "group": "1_config@2"
+        },
+        {
+          "command": "oxideSloc.startServe",
+          "when": "view == oxideSloc.panel && !oxideSloc.serveRunning",
+          "group": "2_serve@1"
+        },
+        {
+          "command": "oxideSloc.stopServe",
+          "when": "view == oxideSloc.panel && oxideSloc.serveRunning",
+          "group": "2_serve@1"
+        }
+      ],
       "explorer/context": [
         {
           "command": "oxideSloc.analyzeCurrent",
@@ -102,13 +180,41 @@
           "default": "",
           "markdownDescription": "Path to the `oxide-sloc` executable. Leave empty to fall back to the `SLOC_BIN` / `OXIDE_SLOC` environment variables, then `oxide-sloc` on `PATH`."
         },
+        "oxideSloc.options.perFile": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Include a per-file breakdown in the report (`--per-file`). Edit visually via **Oxide SLOC: Configure Analyze Options**."
+        },
+        "oxideSloc.options.failOnWarnings": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Exit non-zero if analysis emits any warnings (`--fail-on-warnings`)."
+        },
+        "oxideSloc.options.activityWindow": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Recent-activity window in days (`--activity-window`). `0` disables it."
+        },
+        "oxideSloc.options.failBelow": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Fail if total code lines drop below this threshold (`--fail-below`). `0` disables it."
+        },
+        "oxideSloc.options.maxComplexity": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Fail if cyclomatic complexity exceeds this value (`--max-complexity`). `0` disables it."
+        },
         "oxideSloc.analyzeFlags": {
           "type": "array",
           "items": {
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Extra flags appended verbatim to `oxide-sloc analyze` (for example `--per-file`, `--activity-window`, `90`, `--fail-below`, `1000`)."
+          "markdownDescription": "Advanced escape hatch: extra flags appended verbatim to `oxide-sloc analyze`, after the friendly options above (for example `--activity-window`, `90`). Most users should use **Oxide SLOC: Configure Analyze Options** instead."
         },
         "oxideSloc.configPath": {
           "type": "string",

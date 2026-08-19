@@ -12,6 +12,8 @@ const COMMANDS = [
   'oxideSloc.startServe',
   'oxideSloc.stopServe',
   'oxideSloc.refreshStatus',
+  'oxideSloc.locateBinary',
+  'oxideSloc.configureOptions',
 ];
 
 describe('Extension activation', () => {
